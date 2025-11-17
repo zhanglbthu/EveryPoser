@@ -1,11 +1,11 @@
 import torch
 
-from mobileposer.config import *
+from config import *
 
 
 def load_model(model_path: str):
     """Load MobilePoser model."""
-    from mobileposer.models import MobilePoserNet
+    from models import MobilePoserNet
     device = model_config.device
     try: 
         model = MobilePoserNet().to(device)

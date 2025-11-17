@@ -4,13 +4,13 @@ import torch
 from argparse import ArgumentParser
 import tqdm 
 
-from mobileposer.config import *
-from mobileposer.helpers import * 
-import mobileposer.articulate as art
-from mobileposer.constants import MODULES
-from mobileposer.utils.model_utils import load_model
-from mobileposer.data import PoseDataset
-from mobileposer.models import MobilePoserNet
+from config import *
+from helpers import * 
+import articulate as art
+from constants import MODULES
+from utils.model_utils import load_model
+from data import PoseDataset
+from models import MobilePoserNet
 
 
 class PoseEvaluator:

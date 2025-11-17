@@ -29,13 +29,13 @@ class paths:
     checkpoint = root_dir / "checkpoints"
     smpl_file = root_dir / "smpl/basicmodel_m.pkl"
     weights_file = root_dir / "checkpoints/weights.pth"
-    raw_amass = Path("/data/projects/Pose/raw/AMASS")           # TODO: replace with your path
-    raw_dip = Path("/data/projects/Pose/raw/DIP_IMU")           # TODO: replace with your path
-    raw_imuposer = Path("/data/projects/Pose/raw/IMUPoser")     # TODO: replace with your path
-    eval_dir = root_dir / "data/processed_datasets/eval"
-    processed_datasets = root_dir / "data/processed_datasets"
-    raw_totalcapture_official = root_dir / "data/raw/TotalCapture/raw"  # TODO: replace with your path
-    calibrated_totalcapture = root_dir / "data/raw/TotalCapture/IMU"  # TODO: replace with your path
+    raw_amass = Path("/root/autodl-tmp/data/AMASS") 
+    raw_dip = Path("/root/autodl-tmp/data/DIP_IMU")           
+    raw_imuposer = Path("/root/autodl-tmp/data/imuposer_dataset")     
+    eval_dir = Path("/root/autodl-tmp/processed_dataset/eval")
+    processed_datasets = Path("/root/autodl-tmp/processed_dataset")
+    raw_totalcapture_official = root_dir / "/root/autodl-tmp/data/TotalCapture/official"
+    calibrated_totalcapture = root_dir / "/root/autodl-tmp/data/TotalCapture/calibrated" 
 
 class model_config:
     """MobilePoser Model configurations."""
@@ -59,17 +59,17 @@ class amass:
     # device-location combinationsa
     combos = {
         'lw_rp_h': [0, 3, 4],
-        'rw_rp_h': [1, 3, 4],
-        'lw_lp_h': [0, 2, 4],
-        'rw_lp_h': [1, 2, 4],
-        'lw_lp': [0, 2],
-        'lw_rp': [0, 3],
-        'rw_lp': [1, 2],
-        'rw_rp': [1, 3],
-        'lp_h': [2, 4],
-        'rp_h': [3, 4],
-        'lp': [2],
-        'rp': [3],
+        # 'rw_rp_h': [1, 3, 4],
+        # 'lw_lp_h': [0, 2, 4],
+        # 'rw_lp_h': [1, 2, 4],
+        # 'lw_lp': [0, 2],
+        # 'lw_rp': [0, 3],
+        # 'rw_lp': [1, 2],
+        # 'rw_rp': [1, 3],
+        # 'lp_h': [2, 4],
+        # 'rp_h': [3, 4],
+        # 'lp': [2],
+        # 'rp': [3],
      }
     acc_scale = 30
     vel_scale = 2

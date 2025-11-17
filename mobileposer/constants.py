@@ -1,6 +1,6 @@
 import os
 
-from mobileposer.models import MobilePoserNet, Poser, Joints, FootContact, Velocity
+from models import MobilePoserNet, Poser, Joints, FootContact, Velocity
 
 # List of available modules
 MODULES = {
