@@ -68,7 +68,12 @@ class MotionViewer:
             self.server_for_unity.close()
         self.conn = None
         self.server_for_unity = None
-
+        
+    def clear_all(self, render=True):
+        self.clear_line(render=render)
+        self.clear_point(render=render)
+        self.clear_terrian(render=render)
+    
     def update_all(self, poses: list, trans: list, render=True):
         r"""
         Update all subject's motions together.

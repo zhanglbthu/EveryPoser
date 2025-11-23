@@ -290,17 +290,9 @@ def align_sensor_noitom(imu_set, sensor_set, n_calibration):
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--name', type=str, default='default')
-    parser.add_argument('--device_type', type=str, choices=['noitom', 'apple', 'noitom_apple'], default='noitom')
+    parser.add_argument('--noitom', action='store_true', help='use noitom imu')
+    parser.add_argument('--apple', action='store_true', help='use apple imu')
     args = parser.parse_args()
-    
-    udp_ports = [8001, 8002, 8003, 8004, 8005]
-    device_ids = {
-        "Left_phone": 0,
-        "Left_watch": 1,
-        "Left_headphone": 2,
-        "Right_phone": 3,
-        "Right_watch": 4
-    }
     
     device = torch.device("cuda")
     clock = Clock()
@@ -308,78 +300,85 @@ if __name__ == '__main__':
     # set mobileposer network
     ckpt_path = "data/checkpoints/weights.pth"
     net = load_model(ckpt_path)
-    print('Mobileposer model loaded.')
-
-    # add ground truth readings
-    imu_set = IMUSet()
-    RMI, RSB = tpose_calibration_noitom(imu_set=imu_set)
-
-    apple_sensor = AppleSensor(udp_ports, device_ids)
-    n_calibration = 3
-    qIC_list, qOS_list = align_sensor(apple_sensor, n_calibration)
-    RSB_sensor = tpose_calibration_sensor(apple_sensor, n_calibration)
-    
-    accs, oris = [], []
-    poses, trans = [], []
-    
     net.eval()
-    
+    print('Mobileposer model loaded.')
     combo = [0, 3, 4]
+
+    if args.noitom:
+        # add ground truth readings
+        imu_set = IMUSet()
+        RMI, RSB = tpose_calibration_noitom(imu_set=imu_set)
+    
+    if args.apple:
+        udp_ports = [8001, 8002, 8003, 8004, 8005]
+        device_ids = {
+            "Left_phone": 0,
+            "Left_watch": 1,
+            "Left_headphone": 2,
+            "Right_phone": 3,
+            "Right_watch": 4
+        }
+
+        apple_sensor = AppleSensor(udp_ports, device_ids)
+        n_calibration = 3
+        qIC_list, qOS_list = align_sensor(apple_sensor, n_calibration)
+        RSB_sensor = tpose_calibration_sensor(apple_sensor, n_calibration)
+    
+    accs, oris, poses, trans = [], [], [], []
     
     idx = 0
     # sviewer = StreamingDataViewer(3, y_range=(-10, 10), window_length=200, names=['X', 'Y', 'Z']); sviewer.connect()
-    # rviewer = RotationViewer(2, order='wxyz') 
-    # rviewer.connect()
-    with torch.no_grad(), MotionViewer(1, overlap=False, names=['real']) as viewer:
+    # rviewer = RotationViewer(2, order='wxyz'); rviewer.connect()
+    with torch.no_grad(), MotionViewer(1, overlap=False, names=['mocap']) as viewer:
         while True:
             clock.tick(30)
-            viewer.clear_line(render=False)
-            viewer.clear_point(render=False)
-            viewer.clear_terrian(render=False)
+            viewer.clear_all(render=False)
             
-            # gt readings
-            tframe, RIS, aI = imu_set.get()
-            
-            RMB = torch.zeros_like(RIS).to(device)
-            aM = torch.zeros_like(aI).to(device)
-            
-            RMB[combo] = RMI.matmul(RIS).matmul(RSB)[combo].to(device)
-            aM[combo] = aI.mm(RMI.t())[combo].to(device)
+            if args.noitom:
+                # gt readings
+                tframe, RIS, aI = imu_set.get()
+                
+                RMB = torch.zeros_like(RIS).to(device)
+                aM = torch.zeros_like(aI).to(device)
+                
+                RMB[combo] = RMI.matmul(RIS).matmul(RSB)[combo].to(device)
+                aM[combo] = aI.mm(RMI.t())[combo].to(device)
 
-            # [6, 3, 3] -> [5, 3, 3], 去掉最后一个pelvis
-            RMB = RMB[[0, 1, 2, 3, 4], :, :]
-            aM = aM[[0, 1, 2, 3, 4], :]
+                # [6, 3, 3] -> [5, 3, 3], 去掉最后一个pelvis
+                RMB = RMB[[0, 1, 2, 3, 4], :, :]
+                aM = aM[[0, 1, 2, 3, 4], :]
             
-            RIS_ours = torch.eye(3).repeat(6, 1, 1)
-            aI_ours = torch.zeros(6, 3)
-            for i in range(n_calibration):
-                acc, rot_q = apple_sensor.get(i)
-                qCO_sensor = torch.tensor(rot_q).float()
-                aSS_sensor = torch.tensor(acc).float()
-                qIS_sensor = art.math.quaternion_product(art.math.quaternion_product(qIC_list[i], qCO_sensor), qOS_list[i])
-                RIS_sensor = art.math.quaternion_to_rotation_matrix(qIS_sensor)
-                
-                aIS_sensor = RIS_sensor.squeeze(0).mm( - aSS_sensor.unsqueeze(-1)).squeeze(-1) + torch.tensor([0., 0., 9.8])
-                
-                if i == 0:
-                    index = 3
-                    # sviewer.plot(aSS_sensor)
-                elif i == 1:
-                    index = 0
-                elif i == 2:
-                    index = 4
+            if args.apple:
+                RIS_ours = torch.eye(3).repeat(6, 1, 1)
+                aI_ours = torch.zeros(6, 3)
+                for i in range(n_calibration):
+                    acc, rot_q = apple_sensor.get(i)
+                    qCO_sensor = torch.tensor(rot_q).float()
+                    aSS_sensor = torch.tensor(acc).float()
+                    qIS_sensor = art.math.quaternion_product(art.math.quaternion_product(qIC_list[i], qCO_sensor), qOS_list[i])
+                    RIS_sensor = art.math.quaternion_to_rotation_matrix(qIS_sensor)
                     
-                else:
-                    print("Unknown sensor index")
+                    aIS_sensor = RIS_sensor.squeeze(0).mm( - aSS_sensor.unsqueeze(-1)).squeeze(-1) + torch.tensor([0., 0., 9.8])
                     
-                RIS_ours[index, :, :] = RIS_sensor[0, :, :]
-                aI_ours[index, :] = aIS_sensor
-            
-            RMB_sensor = torch.zeros_like(RIS).to(device)
-            aM_sensor = torch.zeros_like(aI).to(device)
-            
-            RMB_sensor[combo] = RMI.matmul(RIS_ours).matmul(RSB_sensor)[combo].to(device)
-            aM_sensor[combo] = aI_ours.mm(RMI.t())[combo].to(device)
+                    if i == 0:
+                        index = 3
+                        # sviewer.plot(aSS_sensor)
+                    elif i == 1:
+                        index = 0
+                    elif i == 2:
+                        index = 4
+                        
+                    else:
+                        print("Unknown sensor index")
+                        
+                    RIS_ours[index, :, :] = RIS_sensor[0, :, :]
+                    aI_ours[index, :] = aIS_sensor
+                
+                RMB_sensor = torch.zeros_like(RIS).to(device)
+                aM_sensor = torch.zeros_like(aI).to(device)
+                
+                RMB_sensor[combo] = RMI.matmul(RIS_ours).matmul(RSB_sensor)[combo].to(device)
+                aM_sensor[combo] = aI_ours.mm(RMI.t())[combo].to(device)
             
             # r_list = []
             # aa_gt = art.math.rotation_matrix_to_axis_angle(RMB[4]).view(3)
