@@ -36,6 +36,7 @@ class paths:
     processed_datasets = Path("/root/autodl-tmp/processed_dataset")
     raw_totalcapture_official = root_dir / "/root/autodl-tmp/data/TotalCapture/official"
     calibrated_totalcapture = root_dir / "/root/autodl-tmp/data/TotalCapture/calibrated" 
+    temp_dir = Path("data/livedemo/temp")
 
 class model_config:
     """MobilePoser Model configurations."""
