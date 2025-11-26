@@ -212,3 +212,48 @@ class MobilePoserNet(L.LightningModule):
             return pose, pred_joints.squeeze(0), self.last_root_pos.clone(), contact
 
         return pose, pred_joints.squeeze(0), self.last_root_pos.clone(), contact
+                                                                     
+    @torch.no_grad()
+    def forward_frame(self, data, input_lengths=None, tran=False):
+        
+        imu = data.repeat(self.num_total_frames, 1) if self.imu is None else torch.cat((self.imu[1:], data.view(1, -1)))
+
+        # forward the pose prediction model
+        pose, pred_joints, vel, contact = self.forward(imu.unsqueeze(0), [self.num_total_frames])
+
+        # get pose
+        pose = pose[self.num_past_frames].view(-1, 9)
+
+        # compute the joint positions from predicted pose
+        joints = pred_joints.squeeze(0)[self.num_past_frames].view(24, 3)
+        
+        # compute translation positions from predicted pose
+        contact = contact[0][self.num_past_frames]
+        lfoot_pos, rfoot_pos = joints[10], joints[11]
+        if contact[0] > contact[1]:
+            contact_vel = self.last_lfoot_pos - lfoot_pos + self.gravity_velocity
+        else:
+            contact_vel = self.last_rfoot_pos - rfoot_pos + self.gravity_velocity
+        
+        # velocity from network-based estimation
+        root_vel = vel.view(-1, 24, 3)[:, 0] # select root velocity
+        pred_vel = root_vel[self.num_past_frames] / (datasets.fps/amass.vel_scale)
+        
+        weight = self._prob_to_weight(contact.max())
+        
+        velocity = art.math.lerp(pred_vel, contact_vel, weight)
+
+        # remove penetration
+        current_foot_y = self.current_root_y + min(lfoot_pos[1].item(), rfoot_pos[1].item())
+        if current_foot_y + velocity[1].item() <= self.floor_y:
+            velocity[1] = self.floor_y - current_foot_y
+
+        self.current_root_y += velocity[1].item()
+        self.last_lfoot_pos, self.last_rfoot_pos = lfoot_pos, rfoot_pos
+        self.imu = imu.squeeze(0)
+        self.last_root_pos += velocity
+        
+        if tran:
+            return pose, self.last_root_pos.clone()
+        
+        return pose           
