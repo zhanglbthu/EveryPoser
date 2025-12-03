@@ -57,11 +57,12 @@ def process_amass():
             continue
 
         data_pose, data_trans, data_beta, length = [], [], [], []
-        print("\rReading", ds_name)
-
         for npz_fname in tqdm(sorted(glob.glob(os.path.join(paths.raw_amass, ds_name, "*/*_poses.npz")))):
-            try: cdata = np.load(npz_fname)
-            except: continue
+            try: 
+                cdata = np.load(npz_fname)
+            except: 
+                print(f"Corrupted AMASS file: {npz_fname}, skip!")
+                continue
 
             framerate = int(cdata['mocap_framerate'])
             if framerate not in [120, 60, 59]:
@@ -125,7 +126,6 @@ def process_amass():
         data_path = paths.processed_datasets / f"{ds_name}.pt"
         torch.save(data, data_path)
         print(f"Synthetic AMASS dataset is saved at: {data_path}")
-
 
 def process_totalcapture():
     """Preprocess TotalCapture dataset for testing."""
@@ -223,7 +223,6 @@ def process_totalcapture():
     torch.save(data, data_path)
     print("Preprocessed TotalCapture dataset is saved at:", paths.processed_totalcapture)
 
-
 def process_dipimu(split="test"):
     """Preprocess DIP for finetuning and evaluation."""
     imu_mask = [7, 8, 9, 10, 0, 2]
@@ -294,7 +293,6 @@ def process_dipimu(split="test"):
     torch.save(data, data_path)
     print(f"Preprocessed DIP-IMU dataset is saved at: {data_path}")
 
-
 def process_imuposer(split: str="train"):
     """Preprocess the IMUPoser dataset"""
 
@@ -340,11 +338,9 @@ def process_imuposer(split: str="train"):
     data_path = paths.eval_dir / f"imuposer_{split}.pt"
     torch.save(data, data_path)
 
-
 def create_directories():
     paths.processed_datasets.mkdir(exist_ok=True, parents=True)
     paths.eval_dir.mkdir(exist_ok=True, parents=True)
-
 
 if __name__ == "__main__":
     parser = ArgumentParser()

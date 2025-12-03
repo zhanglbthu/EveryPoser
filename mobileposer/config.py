@@ -2,6 +2,11 @@ import torch
 from pathlib import Path
 from enum import Enum, auto
 
+imu_num = 3
+tic_ws = 128
+amass_data = ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh', 'Transitions_mocap', 'SSM_synced', 'CMU',
+              'TotalCapture', 'Eyes_Japan_Dataset', 'KIT', 'BMLmovi', 'EKUT', 'TCD_handMocap', 'ACCAD',
+              'BioMotionLab_NTroje', 'BMLhandball', 'MPI_Limits', 'DFaust67']
 
 class train_hypers:
     """Hyperparameters for training."""
@@ -26,17 +31,20 @@ class finetune_hypers:
 class paths:
     """Relevant paths for MobilePoser. Change as necessary."""
     root_dir = Path().absolute()
-    checkpoint = root_dir / "checkpoints"
+    checkpoint = root_dir / "data/checkpoints"
     smpl_file = root_dir / "smpl/basicmodel_m.pkl"
     weights_file = root_dir / "checkpoints/weights.pth"
-    raw_amass = Path("/root/autodl-tmp/data/AMASS") 
-    raw_dip = Path("/root/autodl-tmp/data/DIP_IMU")           
-    raw_imuposer = Path("/root/autodl-tmp/data/imuposer_dataset")     
+    raw_amass = Path("/root/autodl-tmp/data_raw/AMASS") 
+    raw_dip = Path("/root/autodl-tmp/data_raw/DIP_IMU")           
+    raw_imuposer = Path("/root/autodl-tmp/data_raw/imuposer_dataset")     
     eval_dir = Path("/root/autodl-tmp/processed_dataset/eval")
     processed_datasets = Path("/root/autodl-tmp/processed_dataset")
     raw_totalcapture_official = root_dir / "/root/autodl-tmp/data/TotalCapture/official"
     calibrated_totalcapture = root_dir / "/root/autodl-tmp/data/TotalCapture/calibrated" 
     temp_dir = Path("data/livedemo/temp")
+    
+    # TIC
+    amass_dir = '/root/autodl-tmp/data_TIC/AMASS_IMU6'
 
 class model_config:
     """MobilePoser Model configurations."""
@@ -60,17 +68,17 @@ class amass:
     # device-location combinationsa
     combos = {
         'lw_rp_h': [0, 3, 4],
-        # 'rw_rp_h': [1, 3, 4],
-        # 'lw_lp_h': [0, 2, 4],
-        # 'rw_lp_h': [1, 2, 4],
-        # 'lw_lp': [0, 2],
-        # 'lw_rp': [0, 3],
-        # 'rw_lp': [1, 2],
-        # 'rw_rp': [1, 3],
-        # 'lp_h': [2, 4],
-        # 'rp_h': [3, 4],
-        # 'lp': [2],
-        # 'rp': [3],
+        'rw_rp_h': [1, 3, 4],
+        'lw_lp_h': [0, 2, 4],
+        'rw_lp_h': [1, 2, 4],
+        'lw_lp': [0, 2],
+        'lw_rp': [0, 3],
+        'rw_lp': [1, 2],
+        'rw_rp': [1, 3],
+        'lp_h': [2, 4],
+        'rp_h': [3, 4],
+        'lp': [2],
+        'rp': [3],
      }
     acc_scale = 30
     vel_scale = 2

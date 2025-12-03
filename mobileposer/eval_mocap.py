@@ -2,15 +2,17 @@ import os
 import numpy as np
 import torch
 from argparse import ArgumentParser
-import tqdm 
+from tqdm import tqdm
 
 from config import *
 from helpers import * 
 import articulate as art
 from constants import MODULES
 from utils.model_utils import load_model
-from data import PoseDataset
+from data_mocap import PoseDataset
 from models import MobilePoserNet
+from TicOperator import *
+from model_tic import *
 
 
 class PoseEvaluator:
@@ -35,9 +37,39 @@ class PoseEvaluator:
                                   'Jitter Error (100m/s^3)', 'Distance Error (cm)']):
             print('%s: %.2f (+/- %.2f)' % (name, errors[i, 0], errors[i, 1]))
 
+    @staticmethod
+    def print_single(errors, file=None):
+        metric_names = [
+            'SIP Error (deg)', 
+            'Angular Error (deg)', 
+            'Masked Angular Error (deg)',
+            'Positional Error (cm)', 
+            'Masked Positional Error (cm)', 
+            'Mesh Error (cm)', 
+            'Jitter Error (100m/s^3)', 
+            'Distance Error (cm)'
+        ]
+        
+        # 找出最长的指标名，以便统一对齐
+        max_len = max(len(name) for name in metric_names)
+
+        # 将每个指标的输出字符串保存到列表中，最后 join 成一行输出
+        output_parts = []
+        for i, name in enumerate(metric_names):
+            if name in ['Angular Error (deg)', 'Mesh Error (cm)']:
+                # 对这类指标使用“均值 ± 方差”的格式
+                output_str = f"{name:<{max_len}}: {errors[i,0]:.2f}"
+            else:
+                continue
+            
+            output_parts.append(output_str)
+
+        # 最终打印为一行
+        print(" | ".join(output_parts), file=file)
+        # 如果需要在末尾换行，print 本身就会换行，无需额外操作
 
 @torch.no_grad()
-def evaluate_pose(model, dataset, num_past_frame=20, num_future_frame=5, evaluate_tran=False):
+def evaluate_pose(model, dataset, num_future_frame=5, evaluate_tran=False, calibrator=None, use_cali=False, save_dir=None):
     # specify device
     device = model_config.device
 
@@ -48,20 +80,37 @@ def evaluate_pose(model, dataset, num_past_frame=20, num_future_frame=5, evaluat
     evaluator = PoseEvaluator()
 
     # track errors
-    offline_errs, online_errs = [], []
+    online_errs = []
     tran_errors = {window_size: [] for window_size in list(range(1, 8))}
     
     model.eval()
     with torch.no_grad():
-        for x, y in tqdm.tqdm(list(zip(xs, ys))):
+        for idx, (x, y) in enumerate(tqdm(zip(xs, ys), total=len(xs))):
+            if use_cali:
+                calibrator.reset()
+                acc = x[:, :5 * 3] * amass.acc_scale
+                rot = x[:, 5 * 3:]
+                
+                acc = acc.view(-1, 5, 3)
+                rot = rot.view(-1, 5, 3, 3)
+                
+                acc_raw = acc[:, [0, 3, 4]]
+                rot_raw = rot[:, [0, 3, 4]]
+
+                rot_cali, acc_cali, _, _ = calibrator.run(rot_raw, acc_raw, trigger_t=1)
+                acc_cali = acc_cali / amass.acc_scale
+                
+                acc[:, [0, 3, 4]] = acc_cali
+                rot[:, [0, 3, 4]] = rot_cali
+                
+                x = torch.cat((acc.flatten(1), rot.flatten(1)), dim=-1)
+            
             model.reset()
-            pose_p_offline, joint_p_offline, tran_p_offline, _ = model.forward_offline(x.unsqueeze(0), [x.shape[0]])
             pose_t, tran_t = y
             pose_t = art.math.r6d_to_rotation_matrix(pose_t)
 
-            if getenv("ONLINE"):
-                online_results = [model.forward_online(f) for f in torch.cat((x, x[-1].repeat(num_future_frame, 1)))]
-                pose_p_online, joint_p_online, tran_p_online, _ = [torch.stack(_)[num_future_frame:] for _ in zip(*online_results)]
+            online_results = [model.forward_online(f) for f in torch.cat((x, x[-1].repeat(num_future_frame, 1)))]
+            pose_p_online, joint_p_online, tran_p_online, _ = [torch.stack(_)[num_future_frame:] for _ in zip(*online_results)]
 
             if evaluate_tran:
                 # compute gt move distance at every frame 
@@ -85,22 +134,33 @@ def evaluate_pose(model, dataset, num_past_frame=20, num_future_frame=5, evaluat
                     # calculate mean distance error 
                     errs = []
                     for start, end in frame_pairs:
-                        vel_p = tran_p_offline[end] - tran_p_offline[start]
+                        vel_p = tran_p_online[end] - tran_p_online[start]
                         vel_t = (tran_t[end] - tran_t[start]).to(device)
                         errs.append((vel_t - vel_p).norm() / (move_distance_t[end] - move_distance_t[start]) * window_size)
                     if len(errs) > 0:
                         tran_errors[window_size].append(sum(errs) / len(errs))
 
-            offline_errs.append(evaluator.eval(pose_p_offline, pose_t, tran_p=tran_p_offline, tran_t=tran_t))
-            if getenv("ONLINE"):
-                online_errs.append(evaluator.eval(pose_p_online, pose_t, tran_p=tran_p_online, tran_t=tran_t))
+            online_errs.append(evaluator.eval(pose_p_online, pose_t, tran_p=tran_p_online, tran_t=tran_t))
+            
+            if save_dir:
+                torch.save({'pose_t': pose_t, 
+                            'pose_p': pose_p_online,
+                            },
+                           save_dir / f"{idx}.pt")
 
     # print joint errors
-    print('============== offline ================')
-    evaluator.print(torch.stack(offline_errs).mean(dim=0))
-    if getenv("ONLINE"):
-        print('============== online ================')
-        evaluator.print(torch.stack(online_errs).mean(dim=0))
+    print('============== online ================')
+    evaluator.print(torch.stack(online_errs).mean(dim=0))
+    
+    log_path = save_dir / 'log.txt'
+    
+    # 清空原有内容
+    with open(log_path, 'w', encoding='utf-8') as f:
+        pass
+        
+    for online_err in online_errs:
+        with open(log_path, 'a', encoding='utf-8') as f:
+            evaluator.print_single(online_err, file=f)
     
     # print translation errors
     if evaluate_tran:
@@ -109,13 +169,21 @@ def evaluate_pose(model, dataset, num_past_frame=20, num_future_frame=5, evaluat
 
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('--model', type=str, required=True)
-    parser.add_argument('--dataset', type=str, default='dip')
+    parser.add_argument('--model', type=str, default='./data/checkpoints/weights.pth')
+    parser.add_argument('--dataset', type=str, default='imuposer')
+    parser.add_argument('--use_cali', action='store_true')
     args = parser.parse_args()
+    device = torch.device("cuda")
 
     # load model 
     model = load_model(args.model)
 
+    # load calibrator
+    tic = TIC(stack=3, n_input=imu_num * (3 + 3 * 3), n_output=imu_num * 6)
+    tic.restore("./checkpoint/TIC_20.pth")
+    net = tic.to(device).eval()
+    ts = TicOperator(TIC_network=net, imu_num=imu_num, data_frame_rate=30)
+    
     # load dataset
     if args.dataset not in datasets.test_datasets:
         raise ValueError(f"Test dataset: {args.dataset} not found.")
@@ -123,4 +191,7 @@ if __name__ == '__main__':
 
     # evaluate pose
     print(f"Starting evaluation: {args.dataset.capitalize()}")
-    evaluate_pose(model, dataset)
+    save_dir = Path('data') / 'eval' / args.dataset
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    evaluate_pose(model, dataset, calibrator=ts, use_cali=args.use_cali, save_dir=save_dir)

@@ -6,6 +6,7 @@ torch.set_printoptions(sci_mode=False)
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 import lightning as L
+from pytorch_lightning.loggers import TensorBoardLogger
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch import seed_everything
@@ -15,20 +16,18 @@ from typing import List
 from tqdm import tqdm 
 import wandb
 
-from mobileposer.constants import MODULES
-from mobileposer.data import PoseDataModule
-from mobileposer.utils.file_utils import (
+from constants import MODULES
+from data_mocap import PoseDataModule
+from utils.file_utils import (
     get_datestring, 
     make_dir, 
     get_dir_number, 
     get_best_checkpoint
 )
-from mobileposer.config import paths, train_hypers, finetune_hypers
-
+from config import paths, train_hypers, finetune_hypers
 
 # set precision for Tensor cores
 torch.set_float32_matmul_precision('medium')
-
 
 class TrainingManager:
     """Manage training of MobilePoser modules."""
@@ -44,6 +43,13 @@ class TrainingManager:
             save_dir=save_path
         ) 
         return wandb_logger
+    
+    def _setup_tensorboard_logger(self, save_path: Path):
+        tensorboard_logger = TensorBoardLogger(
+            save_path, 
+            name=get_datestring()
+        )
+        return tensorboard_logger
 
     def _setup_callbacks(self, save_path):
         checkpoint_callback = ModelCheckpoint(
@@ -59,7 +65,7 @@ class TrainingManager:
 
     def _setup_trainer(self, module_path: Path):
         print("Module Path: ", module_path.name, module_path)
-        logger = self._setup_wandb_logger(module_path) 
+        logger = self._setup_tensorboard_logger(module_path) 
         checkpoint_callback = self._setup_callbacks(module_path)
         trainer = L.Trainer(
                 fast_dev_run=self.fast_dev_run,
@@ -96,7 +102,6 @@ class TrainingManager:
             del model
             torch.cuda.empty_cache()
 
-
 def get_checkpoint_path(finetune: str, init_from: str):
     if finetune:
         # finetune from a checkpoint
@@ -111,7 +116,6 @@ def get_checkpoint_path(finetune: str, init_from: str):
     
     make_dir(checkpoint_path)
     return Path(checkpoint_path)
-
 
 if __name__ == "__main__":
     parser = ArgumentParser()
