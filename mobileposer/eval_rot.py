@@ -3,7 +3,8 @@ import torch
 import articulate as art
 import config
 from model_tic import *
-from TicOperator import *
+# from TicOperator import *
+from TicOperator_ours import *
 from evaluation_functions import *
 
 
@@ -14,23 +15,26 @@ class TICModelEvaluator:
                  n_output=config.imu_num * 6):
         # Set device and model
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        self.model = TIC(stack=stack, n_input=n_input, n_output=n_output)
+        # self.model = TIC(stack=stack, n_input=n_input, n_output=n_output)
+        self.model = LSTMIC(n_input=n_input, n_output=n_output)
         self.model.restore(model_checkpoint_path)
 
         self.model = self.model.to(self.device).eval()
 
         # set dataset path
         data_dir = "/root/autodl-tmp/processed_dataset/eval"
-        dataset_name = 'imuposer_test.pt'
+        dataset_name = 'imuposer_full_upper_body.pt'
         self.dataset_path = os.path.join(data_dir, dataset_name)
         self.data = torch.load(self.dataset_path)
         
         # set body model
         self.body_model = art.ParametricModel(config.paths.smpl_file)
         
-        # set combo
-        self.combo = config.amass.combos['lw_rp_h']
-        self.j_mask = torch.tensor([18, 19, 1, 2, 15, 0])
+        # set ego id
+        self.ego_id = -1
+        
+        # print ego id
+        print(f'Ego ID: {self.ego_id}')
 
     def inference(self, acc, ori):
         acc = acc.to(self.device)
@@ -40,6 +44,15 @@ class TICModelEvaluator:
         ori_fix, acc_fix, pred_drift, pred_offset = ts.run(ori, acc, trigger_t=1)
 
         return acc_fix.cpu(), ori_fix.cpu(), pred_drift.cpu(), pred_offset.cpu()
+
+    def inference_ours(self, acc, ori):
+        acc = acc.to(self.device)
+        ori = ori.to(self.device)
+
+        ts = TicOperator(TIC_network=self.model, imu_num=config.imu_num, data_frame_rate=30)
+        ori_fix, acc_fix, pred_drift, pred_offset = ts.run_per_frame(ori, acc)
+
+        return acc_fix.cpu(), ori_fix.cpu(), pred_drift, pred_offset
     
     def evaluate(self):
         print('=====Evaluation Start=====')
@@ -120,7 +133,7 @@ class TICModelEvaluator:
                 # calibrate imu data
                 acc = acc[:, [0, 3, 4]]
                 ori = ori[:, [0, 3, 4]]
-                _, ori_calib, _, _ = self.inference(acc, ori)
+                _, ori_calib, _, _ = self.inference_ours(acc, ori)
                 ori_calib = ori_calib.view(-1, config.imu_num, 3, 3)
             
             imu_bone = ori
@@ -128,9 +141,9 @@ class TICModelEvaluator:
             gt_bone  = pose[:, [18, 2, 15]]
             
             # calculate yaw
-            gt_yaw = get_ego_yaw(gt_bone, ego_idx=-1)    # use head as ego id
-            imu_yaw = get_ego_yaw(imu_bone, ego_idx=-1)  # use head as ego id
-            imu_yaw_calib = get_ego_yaw(imu_bone_calib, ego_idx=-1)
+            gt_yaw = get_ego_yaw(gt_bone, ego_idx=self.ego_id)    # use head as ego id
+            imu_yaw = get_ego_yaw(imu_bone, ego_idx=self.ego_id)  # use head as ego id
+            imu_yaw_calib = get_ego_yaw(imu_bone_calib, ego_idx=self.ego_id)
             
             # transform rotation to ego-yaw
             gt_bone = gt_yaw.transpose(-2, -1).matmul(gt_bone)
@@ -146,11 +159,15 @@ class TICModelEvaluator:
         self._print_results(result_static_ome, result_dynamic_ome)
 
 def main():
-    model_checkpoint_path = './checkpoint/TIC_20.pth'
+    # 构建模型文件路径
+    model_checkpoint_path = f'./data/checkpoint/calibrator/Ours_IMUPoserData/Ours_IMUPoserData_20.pth'
+        
+    # 创建TIC模型评估器
     tic_evaluator = TICModelEvaluator(model_checkpoint_path)
 
-    # Run evaluation
+    # 运行评估
+    print(f'Evaluating TIC model with checkpoint: {model_checkpoint_path}')
     tic_evaluator.evaluate_imuposer(calibrate=True)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

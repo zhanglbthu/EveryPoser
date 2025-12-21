@@ -41,6 +41,7 @@ class paths:
     processed_datasets = Path("/root/autodl-tmp/processed_dataset")
     raw_totalcapture_official = root_dir / "/root/autodl-tmp/data/TotalCapture/official"
     calibrated_totalcapture = root_dir / "/root/autodl-tmp/data/TotalCapture/calibrated" 
+    real_dataset_processed_dir = '/root/autodl-tmp/data/Real_Dataset/RealData_Processed'
     temp_dir = Path("data/livedemo/temp")
     
     # TIC
@@ -49,6 +50,7 @@ class paths:
 class model_config:
     """MobilePoser Model configurations."""
     # device
+    tic_ws = 128
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     
     # joint set
@@ -68,17 +70,17 @@ class amass:
     # device-location combinationsa
     combos = {
         'lw_rp_h': [0, 3, 4],
-        'rw_rp_h': [1, 3, 4],
-        'lw_lp_h': [0, 2, 4],
-        'rw_lp_h': [1, 2, 4],
-        'lw_lp': [0, 2],
-        'lw_rp': [0, 3],
-        'rw_lp': [1, 2],
-        'rw_rp': [1, 3],
-        'lp_h': [2, 4],
-        'rp_h': [3, 4],
-        'lp': [2],
-        'rp': [3],
+        # 'rw_rp_h': [1, 3, 4],
+        # 'lw_lp_h': [0, 2, 4],
+        # 'rw_lp_h': [1, 2, 4],
+        # 'lw_lp': [0, 2],
+        # 'lw_rp': [0, 3],
+        # 'rw_lp': [1, 2],
+        # 'rw_rp': [1, 3],
+        # 'lp_h': [2, 4],
+        # 'rp_h': [3, 4],
+        # 'lp': [2],
+        # 'rp': [3],
      }
     acc_scale = 30
     vel_scale = 2
@@ -90,7 +92,6 @@ class amass:
     pred_joints_set = [*range(24)]
     joint_sets = [18, 19, 1, 2, 15, 0]
     ignored_joints = list(set(pred_joints_set) - set(joint_sets))
-
 
 class datasets:
     """Dataset information."""
@@ -108,12 +109,15 @@ class datasets:
     imuposer = "imuposer.pt"
     imuposer_train = "imuposer_train.pt"
     imuposer_test = "imuposer_test.pt"
+    
+    imuposer_upper_body = "imuposer_full_upper_body.pt"
 
     # Test datasets
     test_datasets = {
         'dip': dip_test,
         'totalcapture': totalcapture,
-        'imuposer': imuposer_test
+        'imuposer': imuposer_test,
+        'imuposer_upper_body': imuposer_upper_body
     }
 
     # Finetune datasets
@@ -133,6 +137,11 @@ class datasets:
 
     # Window length of IMU and Pose data 
     window_length = 125
+
+class imuposer_dataset:
+    upper_body = ['startClap', 'ArmRaises', 'ArmSwing', 'TennisSwings', 'Boxing', 'Basketball', 'WavingAndClapping',
+                  'startClapping', 'ArmSwings', 'ArmsCrossing', 'BasketBall', 'Waving', 'ClappingFull',
+                  'startcalpping', 'Armcrossing', 'ArmRaisesRedo']
 
 class joint_set:
     """Joint sets configurations."""

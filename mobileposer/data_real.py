@@ -2,7 +2,7 @@ import random
 import Aplus.tools.smpl_light
 import config
 from Aplus.data import *
-from config import amass, paths
+from config import paths, joint_set, amass
 import os
 from articulate.math import axis_angle_to_rotation_matrix, rotation_matrix_to_r6d, axis_angle_to_quaternion, euler_angle_to_rotation_matrix, rotation_matrix_to_euler_angle, quaternion_to_rotation_matrix
 from tqdm import tqdm
@@ -12,6 +12,9 @@ import articulate as art
 combo = amass.combos['lw_rp_h']
 
 def amass_read_seg(path, min_len=128, step=2, read_rate=1, combo=None):
+    '''
+    downsample amass data to 30fps
+    '''
     data = torch.load(path)
     selected_data = []
     seg_info = []
@@ -28,15 +31,11 @@ def amass_read_seg(path, min_len=128, step=2, read_rate=1, combo=None):
         selected_data = selected_data[:seq_num]
         seg_info = seg_info[:seq_num]
     data = torch.cat(selected_data, dim=0)
-    # print(acc_t.shape)
-    # index_info = seg_info_2_index_info(seg_info)
-    # print(index_info)
-    # find_seg_index(index_info, 2200)
     
     # select combo in data
     if combo is not None:
         data = data[:, combo]
-    
+
     return data, seg_info
 
 def dip_read_seg(data, min_len=256, step=2):
@@ -74,16 +73,17 @@ def find_seg_index(index_info, data_index, n_seg=0):
     return seq_index, inner_index
 
 class IMUData(BaseDataset):
-    def __init__(self, rot: torch.Tensor, acc, seg_info, head_acc=None, seq_len=256):
+    def __init__(self, rot: torch.Tensor, acc, rot_gt, acc_gt, seg_info, head_acc=None, seq_len=256):
         self.rot = rot
         self.acc = acc
+        self.rot_gt = rot_gt
+        self.acc_gt = acc_gt
         self.head_acc = head_acc
         self.data_len = len(rot) - len(seg_info) * (seq_len - 1)
         self.amass_data_len = 1834274
         # self.amass_data_len = 2330402
         self.seg_info = seg_info
         self.seq_len = seq_len
-        self.head_acc = head_acc
         self.index_info = seg_info_2_index_info(seg_info)
 
         data_seq_info = (np.array(seg_info) - (seq_len - 1)).tolist()
@@ -111,12 +111,13 @@ class IMUData(BaseDataset):
         i = self.indexer[i]
         index_begin = self.mapping[i]
         _rot, _acc = self.rot[index_begin:index_begin + self.seq_len], self.acc[index_begin:index_begin + self.seq_len]
+        _rot_gt, _acc_gt = self.rot_gt[index_begin:index_begin + self.seq_len], self.acc_gt[index_begin:index_begin + self.seq_len] 
         if self.head_acc is not None and i < self.amass_data_len:
             head_acc_idx = random.randint(0, 13)
             head_acc = self.head_acc[index_begin:index_begin + self.seq_len, head_acc_idx]
-            _acc[:, 2] = head_acc # change: only contain three devices, the third device is head acc
+            _acc[:, 4] = head_acc
 
-        return _rot, _acc
+        return _rot, _acc, _rot_gt, _acc_gt
 
     @staticmethod
     def merge(data_dict_1, data_dict_2):
@@ -145,34 +146,6 @@ class IMUData(BaseDataset):
             Dict of datas.
         """
 
-        rot, seg_info = amass_read_seg(os.path.join(folder_path, 'vrot.pt'), min_len=256,step=step, read_rate=read_rate, combo=combo)
-        acc, _ = amass_read_seg(os.path.join(folder_path, 'vacc.pt'), min_len=256, step=step, read_rate=read_rate, combo=combo)
-        head_acc, _ = amass_read_seg(os.path.join(folder_path, 'vacc_head14.pt'), min_len=256, step=step, read_rate=read_rate)
-
-        rot = rot.reshape(-1, config.imu_num, 3, 3)
-        acc = torch.clamp(acc, min=-90, max=90).reshape(-1, config.imu_num, 3)
-        head_acc = torch.clamp(head_acc, min=-90, max=90).unsqueeze(-1)
-        acc = acc.unsqueeze(-1)
-
-        return {'imu_rot': rot,
-                'imu_acc': acc,
-                'head_acc': head_acc,
-                'seg_info': seg_info}
-        
-    @staticmethod
-    @timing
-    def load_realdata(folder_path: str, use_elbow_angle=False, pose_type='r6d', step=2, read_rate=1.0) -> dict:
-        """
-        Load data from files. Rewrite this function to realize data loading for your project. We suggest
-        transform data to [torch.Tensor] and saving to a dict as the return value.
-        Args:
-            path: Path of data files
-            s3_type: ['r6d', 'axis_angle']
-
-        Returns:
-            Dict of datas.
-        """
-
         rot, seg_info = amass_read_seg(os.path.join(folder_path, 'rot.pt'), min_len=256, step=step, read_rate=read_rate, combo=combo)
         acc, _ = amass_read_seg(os.path.join(folder_path, 'acc.pt'), min_len=256, step=step, read_rate=read_rate, combo=combo)
         
@@ -186,7 +159,10 @@ class IMUData(BaseDataset):
         acc = acc.unsqueeze(-1)
         acc_gt = torch.clamp(acc_gt, min=-90, max=90).reshape(-1, config.imu_num, 3)
         acc_gt = acc_gt.unsqueeze(-1)
-
+        """
+        rot: [2822654, imu_num, 3, 3]
+        acc: [2822654, imu_num, 3, 1]
+        """
         return {'rot': rot,
                 'acc': acc,
                 'rot_gt': rot_gt,

@@ -12,7 +12,9 @@ from utils.model_utils import load_model
 from data_mocap import PoseDataset
 from models import MobilePoserNet
 from TicOperator import *
+from TicOperator_ours import *
 from model_tic import *
+from articulate.model import ParametricModel
 
 
 class PoseEvaluator:
@@ -68,8 +70,33 @@ class PoseEvaluator:
         print(" | ".join(output_parts), file=file)
         # 如果需要在末尾换行，print 本身就会换行，无需额外操作
 
+vi_mask = torch.tensor([1961, 5424, 876, 4362, 411, 3021])
+ji_mask = torch.tensor([18, 19, 1, 2, 15, 0])
+body_model = ParametricModel(paths.smpl_file, device=model_config.device)
+
+TARGET_FPS = 30
+
+def _syn_acc(v, smooth_n=4):
+    """Synthesize accelerations from vertex positions."""
+    mid = smooth_n // 2
+    scale_factor = TARGET_FPS ** 2 
+
+    acc = torch.stack([(v[i] + v[i + 2] - 2 * v[i + 1]) * scale_factor for i in range(0, v.shape[0] - 2)])
+    acc = torch.cat((torch.zeros_like(acc[:1]), acc, torch.zeros_like(acc[:1])))
+
+    if mid != 0:
+        acc[smooth_n:-smooth_n] = torch.stack(
+            [(v[i] + v[i + smooth_n * 2] - 2 * v[i + smooth_n]) * scale_factor / smooth_n ** 2
+             for i in range(0, v.shape[0] - smooth_n * 2)])
+    return acc
+
 @torch.no_grad()
-def evaluate_pose(model, dataset, num_future_frame=5, evaluate_tran=False, calibrator=None, use_cali=False, save_dir=None):
+def evaluate_pose(model, dataset, num_future_frame=5, 
+                  evaluate_tran=False, 
+                  calibrator=None, 
+                  use_cali=False, 
+                  save_dir=None,
+                  gt_input=False):
     # specify device
     device = model_config.device
 
@@ -86,18 +113,22 @@ def evaluate_pose(model, dataset, num_future_frame=5, evaluate_tran=False, calib
     model.eval()
     with torch.no_grad():
         for idx, (x, y) in enumerate(tqdm(zip(xs, ys), total=len(xs))):
+            model.reset()
+            pose_t, tran_t = y
+            pose_t = art.math.r6d_to_rotation_matrix(pose_t).view(-1, 24, 3, 3)
+            
+            acc = x[:, :5 * 3] * amass.acc_scale
+            rot = x[:, 5 * 3:]
+            acc = acc.view(-1, 5, 3)
+            rot = rot.view(-1, 5, 3, 3)
+            
             if use_cali:
                 calibrator.reset()
-                acc = x[:, :5 * 3] * amass.acc_scale
-                rot = x[:, 5 * 3:]
-                
-                acc = acc.view(-1, 5, 3)
-                rot = rot.view(-1, 5, 3, 3)
                 
                 acc_raw = acc[:, [0, 3, 4]]
                 rot_raw = rot[:, [0, 3, 4]]
 
-                rot_cali, acc_cali, _, _ = calibrator.run(rot_raw, acc_raw, trigger_t=1)
+                rot_cali, acc_cali, _, _ = calibrator.run_per_frame(rot_raw, acc_raw)
                 acc_cali = acc_cali / amass.acc_scale
                 
                 acc[:, [0, 3, 4]] = acc_cali
@@ -105,9 +136,22 @@ def evaluate_pose(model, dataset, num_future_frame=5, evaluate_tran=False, calib
                 
                 x = torch.cat((acc.flatten(1), rot.flatten(1)), dim=-1)
             
-            model.reset()
-            pose_t, tran_t = y
-            pose_t = art.math.r6d_to_rotation_matrix(pose_t)
+            if gt_input:
+                # convert to device
+                pose_t = pose_t.to(device)
+                tran_t = tran_t.to(device)
+                grot, joint, vert = body_model.forward_kinematics(pose=pose_t, tran=tran_t, calc_mesh=True)
+                vacc = _syn_acc(vert[:, vi_mask])
+                vrot = grot[:, ji_mask]
+                
+                acc_gt = vacc[:, [0, 3, 4]] / amass.acc_scale
+                rot_gt = vrot[:, [0, 3, 4]]
+                
+                # acc[:, [0, 3, 4]] = acc_gt
+                acc = acc / amass.acc_scale
+                rot[:, [0, 3, 4]] = rot_gt
+
+                x = torch.cat((acc.flatten(1), rot.flatten(1)), dim=-1)
 
             online_results = [model.forward_online(f) for f in torch.cat((x, x[-1].repeat(num_future_frame, 1)))]
             pose_p_online, joint_p_online, tran_p_online, _ = [torch.stack(_)[num_future_frame:] for _ in zip(*online_results)]
@@ -169,9 +213,10 @@ def evaluate_pose(model, dataset, num_future_frame=5, evaluate_tran=False, calib
 
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('--model', type=str, default='./data/checkpoints/weights.pth')
+    parser.add_argument('--model', type=str, default='./data/checkpoint/mocap/mobileposer/base_model.pth')
     parser.add_argument('--dataset', type=str, default='imuposer')
     parser.add_argument('--use_cali', action='store_true')
+    parser.add_argument('--gt_input', action='store_true')
     args = parser.parse_args()
     device = torch.device("cuda")
 
@@ -179,9 +224,13 @@ if __name__ == '__main__':
     model = load_model(args.model)
 
     # load calibrator
-    tic = TIC(stack=3, n_input=imu_num * (3 + 3 * 3), n_output=imu_num * 6)
-    tic.restore("./checkpoint/TIC_20.pth")
-    net = tic.to(device).eval()
+    # tic = TIC(stack=3, n_input=imu_num * (3 + 3 * 3), n_output=imu_num * 6)
+    # tic.restore("./data/checkpoint/calibrator/TIC_egoHead/TIC_20.pth")
+    # net = tic.to(device).eval()
+    
+    lstmic = LSTMIC(n_input=config.imu_num * (3 + 3 * 3), n_output=config.imu_num * 6)
+    lstmic.restore("./data/checkpoint/calibrator/Ours_IMUPoserData/Ours_IMUPoserData_20.pth")
+    net = lstmic.to(device).eval()
     ts = TicOperator(TIC_network=net, imu_num=imu_num, data_frame_rate=30)
     
     # load dataset
@@ -191,7 +240,20 @@ if __name__ == '__main__':
 
     # evaluate pose
     print(f"Starting evaluation: {args.dataset.capitalize()}")
-    save_dir = Path('data') / 'eval' / args.dataset
+    
+    # set model name
+    if args.use_cali:
+        model_name = "mobileposer_cali"
+    elif args.gt_input:
+        model_name = "mobileposer_gtrot"
+    else:
+        model_name = "mobileposer"
+    
+    save_dir = Path('data') / 'eval' / args.dataset / model_name
+    print("Results will be saved to:", save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     
-    evaluate_pose(model, dataset, calibrator=ts, use_cali=args.use_cali, save_dir=save_dir)
+    evaluate_pose(model, dataset, calibrator=ts, 
+                  use_cali=args.use_cali, 
+                  save_dir=save_dir,
+                  gt_input=args.gt_input)

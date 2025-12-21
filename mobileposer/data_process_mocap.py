@@ -8,7 +8,7 @@ import glob
 
 from articulate.model import ParametricModel
 from articulate import math
-from config import paths, datasets
+from config import paths, datasets, imuposer_dataset
 
 
 # specify target FPS
@@ -293,20 +293,50 @@ def process_dipimu(split="test"):
     torch.save(data, data_path)
     print(f"Preprocessed DIP-IMU dataset is saved at: {data_path}")
 
-def process_imuposer(split: str="train"):
+def process_imuposer(split: str="train", motion_type: str=None):
     """Preprocess the IMUPoser dataset"""
 
     train_split = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8']
     test_split = ['P9', 'P10']
-    subjects = train_split if split == "train" else test_split
+    full_split = train_split + test_split
+    
+    rot_test_split = ['P9', 'P10']
+    
+    processed_real_data_dir = paths.real_dataset_processed_dir
+    
+    # subjects = train_split if split == "train" else test_split
+    if split == "train":
+        subjects = train_split
+    elif split == "test":
+        subjects = test_split
+    elif split == "full":
+        subjects = full_split
+    else:
+        raise ValueError(f"Unknown split: {split}.")
+    
+    # change: use rot_test_split
+    subjects = rot_test_split 
+    
+    if motion_type is not None:
+        if motion_type == "upper_body":
+            selected_type = imuposer_dataset.upper_body
 
     accs, oris, poses, trans = [], [], [], []
+    data_acc, data_rot, data_acc_gt, data_rot_gt, length = [], [], [], [], []
+    
     for pid_path in sorted(paths.raw_imuposer.iterdir()):
         if pid_path.name not in subjects:
             continue
 
         print(f"Processing: {pid_path.name}")
         for fpath in sorted(pid_path.iterdir()):
+            motion_name = fpath.name.split('.')[1].strip()
+            # if selected_type is not None and motion_name not in selected_type:
+            #     continue
+            # else:
+            #     # print pid_path.name and motion_name
+            #     print(f"{motion_name:<20}", end=' ')
+            
             with open(fpath, "rb") as f: 
                 fdata = pickle.load(f)
                 
@@ -319,23 +349,65 @@ def process_imuposer(split: str="train"):
                 rot = torch.tensor([[[-1, 0, 0], [0, 0, 1], [0, 1, 0.]]])
                 pose[:, 0] = rot.matmul(pose[:, 0])
                 tran = tran.matmul(rot.squeeze())
+                
+                # add gt accs and oris
+                grot, joint, vert = body_model.forward_kinematics(pose=pose, tran=tran, calc_mesh=True)
+                vacc = _syn_acc(vert[:, vi_mask])
+                vrot = grot[:, ji_mask]
 
                 # ensure sizes are consistent
                 assert tran.shape[0] == pose.shape[0]
+                
+                data_acc.extend(acc.cpu().numpy())
+                data_rot.extend(ori.cpu().numpy())
+                data_acc_gt.extend(vacc.cpu().numpy())
+                data_rot_gt.extend(vrot.cpu().numpy())
+                length.append(acc.shape[0])
 
-                accs.append(acc)    # N, 5, 3
-                oris.append(ori)    # N, 5, 3, 3
-                poses.append(pose)  # N, 24, 3, 3
-                trans.append(tran)  # N, 3
+                accs.append(acc)        # N, 5, 3
+                oris.append(ori)        # N, 5, 3, 3
+                poses.append(pose)      # N, 24, 3, 3
+                trans.append(tran)      # N, 3
+                
+    length = torch.tensor(length, dtype=torch.int)
 
+    acc = torch.tensor(np.asarray(data_acc, np.float32))
+    rot = torch.tensor(np.asarray(data_rot, np.float32))
+    acc_gt = torch.tensor(np.asarray(data_acc_gt, np.float32))
+    rot_gt = torch.tensor(np.asarray(data_rot_gt, np.float32))
+    print(f'acc shape: {acc.shape}, rot shape: {rot.shape}, acc_gt shape: {acc_gt.shape}, rot_gt shape: {rot_gt.shape}') 
+    
+    out_acc, out_rot, out_acc_gt, out_rot_gt = [], [], [], []
+    b= 0
+    for i, l in tqdm(list(enumerate(length))):
+        if l <= 12: b += l; print('\tdiscard one sequence with length', l); continue
+        out_acc.append(acc[b:b + l].clone())
+        out_rot.append(rot[b:b + l].clone())
+        out_acc_gt.append(acc_gt[b:b + l].clone())
+        out_rot_gt.append(rot_gt[b:b + l].clone())
+        b += l
+    print('Saving')
+    os.makedirs(processed_real_data_dir, exist_ok=True)
+    torch.save(out_acc, os.path.join(processed_real_data_dir, 'acc.pt'))
+    torch.save(out_rot, os.path.join(processed_real_data_dir, 'rot.pt'))
+    torch.save(out_acc_gt, os.path.join(processed_real_data_dir, 'acc_gt.pt'))
+    torch.save(out_rot_gt, os.path.join(processed_real_data_dir, 'rot_gt.pt'))
+    print('Processed real dataset is saved at', processed_real_data_dir)
+    
     print(f"# Data Processed: {len(accs)}")
+    # print total frames length
+    total_frames = sum([a.shape[0] for a in accs])
+    print(f"# Total Frames: {total_frames}")
+    # print total duration in seconds
+    total_duration = total_frames / TARGET_FPS
+    print(f"# Total Duration: {total_duration:.2f} seconds")
     data = {
         'acc': accs,
         'ori': oris,
         'pose': poses,
-        'tran': trans
+        'tran': trans,
     }
-    data_path = paths.eval_dir / f"imuposer_{split}.pt"
+    data_path = paths.eval_dir / f"imuposer_rot.pt"
     torch.save(data, data_path)
 
 def create_directories():
@@ -356,8 +428,9 @@ if __name__ == "__main__":
     elif args.dataset == "totalcapture":
         process_totalcapture()
     elif args.dataset == "imuposer":
-        process_imuposer(split="train")
-        process_imuposer(split="test")
+        # process_imuposer(split="train")
+        # process_imuposer(split="test")
+        process_imuposer(split="full")
     elif args.dataset == "dip":
         process_dipimu(split="train")
         process_dipimu(split="test")

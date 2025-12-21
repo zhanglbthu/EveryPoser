@@ -1,0 +1,15 @@
+{
+    "configurations": [
+        {
+            "name": "dataprocess",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/data_process_mocap.py",
+            "args": [
+                "--dataset", "imuposer"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}

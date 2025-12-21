@@ -1,10 +1,10 @@
-from data_tic import *
-from trainner_tic import *
+from data_real import *
+from trainner_ours import *
 from model_tic import *
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-dataset = IMUData.load_data(folder_path=paths.amass_dir, step=2)
+dataset = IMUData.load_data(folder_path='/root/autodl-tmp/data/Real_Dataset/RealData_Processed', step=1)
 
 data_len = len(dataset['rot'])
 
@@ -25,11 +25,11 @@ trainner = TicTrainner(model=model, data=data_train, optimizer=optimizer, batch_
 
 # trainner.restore(checkpoint_path='checkpoint/TIC_13.pth', load_optimizer=True)
 epoch=20
-model_name = f'RealData_0915_4pants_12345'
-ckpt_path = f'./data/checkpoints/calibrator/{model_name}'
+model_name = f'Ours_IMUPoserData'
+ckpt_path = f'./data/checkpoint/calibrator/{model_name}'
 os.makedirs(ckpt_path, exist_ok=True)
 print(model_name)
 for i in range(epoch):
     trainner.run(epoch=1, data_shuffle=True)
     trainner.save(folder_path=ckpt_path, model_name=model_name)
-    trainner.log_export(f'./data/checkpoints/calibrator/log/{model_name}.xlsx')
+    # trainner.log_export(f'./data/checkpoints/calibrator/log/{model_name}.xlsx')
