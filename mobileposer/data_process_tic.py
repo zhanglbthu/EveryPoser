@@ -220,5 +220,5 @@ def process_realdata():
 
 if __name__ == '__main__':
     # process_amass(smooth_n=3)
-    amass_head_acc_syn(smooth_n=3)
-    # process_realdata()
+    # amass_head_acc_syn(smooth_n=3)
+    process_realdata()

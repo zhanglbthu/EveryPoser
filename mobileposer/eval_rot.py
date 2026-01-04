@@ -2,219 +2,290 @@ import os
 import torch
 import articulate as art
 import config
-from model_tic import *
-# from TicOperator import *
-from TicOperator_ours import *
-from evaluation_functions import *
+import numpy as np
 import matplotlib.pyplot as plt
 
+from tqdm import tqdm
+from enum import Enum
+import importlib
+
+from evaluation_functions import *
+from model_tic import *
+
+
+# ============================================================
+# 1. Calibration mode definition
+# ============================================================
+
+class CalibMode(str, Enum):
+    NONE = "none"
+    TIC = "tic"
+    OURS = "ours"
+
+
+# ============================================================
+# 2. Calibration configuration table
+# ============================================================
+
+CALIB_CONFIG = {
+    CalibMode.TIC: {
+        "operator_module": "TicOperator",
+        "operator_class": "TicOperator",
+        "model_class": TIC,
+        "checkpoint": "./data/checkpoint/calibrator/TIC_egoHead/TIC_20.pth",
+        "operator_kwargs": {"device": None},
+        "run_type": "batch",
+    },
+    CalibMode.OURS: {
+        "operator_module": "TicOperator_ours",
+        "operator_class": "TicOperator",
+        "model_class": LSTMIC,
+        "checkpoint": "./data/checkpoint/calibrator/Ours_SynData/Ours_SynData_20.pth",
+        "operator_kwargs": {"data_frame_rate": 30},
+        "run_type": "per_frame",
+    },
+}
+
+
+# ============================================================
+# 3. Evaluator
+# ============================================================
+
 class TICModelEvaluator:
-    def __init__(self, model_checkpoint_path, device='cuda:0', 
-                 stack=3, 
-                 n_input=config.imu_num * (3 + 3 * 3), 
-                 n_output=config.imu_num * 6):
-        # Set device and model
+    def __init__(self, device="cuda:0"):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        # self.model = TIC(stack=stack, n_input=n_input, n_output=n_output)
-        self.model = LSTMIC(n_input=n_input, n_output=n_output)
-        self.model.restore(model_checkpoint_path)
 
-        self.model = self.model.to(self.device).eval()
-
-        # set dataset path
+        # dataset
         data_dir = "/root/autodl-tmp/processed_dataset/eval"
-        dataset_name = 'imuposer_full_upper_body.pt'
-        self.dataset_path = os.path.join(data_dir, dataset_name)
-        self.data = torch.load(self.dataset_path)
-        
-        # set body model
+        dataset_name = "imuposer_full.pt"
+        self.data = torch.load(os.path.join(data_dir, dataset_name))
+
+        # body model
         self.body_model = art.ParametricModel(config.paths.smpl_file)
-        
-        # set ego id
+
         self.ego_id = -1
-        
-        # print ego id
-        print(f'Ego ID: {self.ego_id}')
+        print(f"[INFO] Ego ID: {self.ego_id}")
 
-    def inference(self, acc, ori):
+        self._model_cache = {}
+        self._operator_cache = {}
+
+    # ========================================================
+    # operator + model (lazy load)
+    # ========================================================
+    def _get_operator(self, mode: CalibMode):
+        if mode in self._operator_cache:
+            return self._operator_cache[mode]
+
+        cfg = CALIB_CONFIG[mode]
+
+        model = cfg["model_class"](
+            n_input=config.imu_num * (3 + 3 * 3),
+            n_output=config.imu_num * 6,
+        )
+        model.restore(cfg["checkpoint"])
+        model = model.to(self.device).eval()
+
+        module = importlib.import_module(cfg["operator_module"])
+        OperatorCls = getattr(module, cfg["operator_class"])
+
+        op_kwargs = dict(cfg.get("operator_kwargs", {}))
+        if "device" in op_kwargs:
+            op_kwargs["device"] = self.device
+
+        operator = OperatorCls(
+            TIC_network=model,
+            imu_num=config.imu_num,
+            **op_kwargs,
+        )
+
+        self._model_cache[mode] = model
+        self._operator_cache[mode] = operator
+        return operator
+
+    # ========================================================
+    # unified calibration
+    # ========================================================
+    def apply_calibration(self, acc, ori, mode: CalibMode):
+        if mode == CalibMode.NONE:
+            return ori
+
         acc = acc.to(self.device)
         ori = ori.to(self.device)
 
-        ts = TicOperator(TIC_network=self.model, imu_num=config.imu_num, device=self.device)
-        ori_fix, acc_fix, pred_drift, pred_offset = ts.run(ori, acc, trigger_t=1)
+        operator = self._get_operator(mode)
+        run_type = CALIB_CONFIG[mode]["run_type"]
 
-        return acc_fix.cpu(), ori_fix.cpu(), pred_drift.cpu(), pred_offset.cpu()
+        if run_type == "batch":
+            ori_fix, _, _, _ = operator.run(ori, acc, trigger_t=1)
+        elif run_type == "per_frame":
+            ori_fix, _, _, _ = operator.run_per_frame(ori, acc)
+        else:
+            raise ValueError(run_type)
 
-    def inference_ours(self, acc, ori):
-        acc = acc.to(self.device)
-        ori = ori.to(self.device)
+        return ori_fix.cpu()
 
-        ts = TicOperator(TIC_network=self.model, imu_num=config.imu_num, data_frame_rate=30)
-        ori_fix, acc_fix, pred_drift, pred_offset = ts.run_per_frame(ori, acc)
+    # ========================================================
+    # helper: subject + local seq id
+    # ========================================================
+    @staticmethod
+    def _get_subject_and_local_idx(idx, subject_ranges):
+        for sid, (s, e) in enumerate(subject_ranges):
+            if s <= idx < e:
+                return sid, idx - s
+        raise ValueError(idx)
 
-        return acc_fix.cpu(), ori_fix.cpu(), pred_drift, pred_offset
-    
-    def evaluate(self):
-        print('=====Evaluation Start=====')
+    # ========================================================
+    # main evaluation
+    # ========================================================
+    def evaluate_imuposer(
+        self,
+        calib_modes,
+        subject_num=None,
+        save_dir=None,
+        save_img=False,
+    ):
+        # ---------- subject ranges ----------
+        if subject_num is not None:
+            subject_ranges = []
+            start = 0
+            for n in subject_num:
+                subject_ranges.append((start, start + n))
+                start += n
+            num_subjects = len(subject_num)
+        else:
+            subject_ranges = None
 
-        result_static_ome = []
-        result_dynamic_ome = []
+        # ---------- results ----------
+        if subject_ranges is None:
+            results = {mode: [] for mode in calib_modes}
+        else:
+            results = {
+                mode: {sid: [] for sid in range(num_subjects)}
+                for mode in calib_modes
+            }
 
-        for f in self.folders:
-            print(f'processing {f}')
-            data_root = os.path.join(config.paths.tic_dataset_dir, f)
-
-            # Load and process ground truth pose data
-            gt_pose = torch.load(os.path.join(data_root, 'pose.pt'))
-            gt_pose = axis_angle_to_rotation_matrix(gt_pose.reshape(-1, 3)).reshape(-1, 24, 3, 3)
-            body_model = art.ParametricModel('./SMPL_MALE.pkl')
-            body_shape = torch.zeros(10)
-            trans = torch.zeros(3)
-            grot, joint = body_model.forward_kinematics(gt_pose, body_shape, trans, calc_mesh=False)
-            gt_bone = grot[:, [18, 19, 4, 5, 15, 0]]
-            imu_bone = torch.load(os.path.join(data_root, 'rot.pt'))
-            tic_fix_bone = torch.load(os.path.join(data_root, f'rot_fix_{self.tag}.pt')).reshape(-1, 6, 3, 3)
-
-            # Acceleration data
-            gt_acc = torch.load(os.path.join(data_root, 'acc_gt.pt')).reshape(-1, 6, 3, 1)
-            imu_acc = torch.load(os.path.join(data_root, 'acc.pt')).reshape(-1, 6, 3, 1)
-            tic_fix_acc = torch.load(os.path.join(data_root, f'acc_fix_{self.tag}.pt')).reshape(-1, 6, 3, 1)
-
-            # Calculate yaw
-            gt_yaw = get_ego_yaw(gt_bone)
-            imu_yaw = get_ego_yaw(imu_bone)
-            tic_fix_yaw = get_ego_yaw(tic_fix_bone)
-
-            # Transform rotation to ego-yaw
-            gt_bone = gt_yaw.transpose(-2, -1).matmul(gt_bone)
-            imu_bone = imu_yaw.transpose(-2, -1).matmul(imu_bone)
-            tic_fix_bone = tic_fix_yaw.transpose(-2, -1).matmul(tic_fix_bone)
-
-            # Transform acceleration to ego-yaw
-            gt_acc = gt_yaw.transpose(-2, -1).matmul(gt_acc)
-            imu_acc = imu_yaw.transpose(-2, -1).matmul(imu_acc)
-            tic_fix_acc = tic_fix_yaw.transpose(-2, -1).matmul(tic_fix_acc)
-
-            # Compute errors
-            err_static = angle_diff(imu_bone, gt_bone)
-            result_static_ome.append(err_static)
-
-            err_dynamic = angle_diff(tic_fix_bone, gt_bone)
-            result_dynamic_ome.append(err_dynamic)
-
-    def _print_results(self, result_static_ome, result_dynamic_ome=None, result_static_ome_global=None):
-
-        result_static_ome = torch.cat(result_static_ome, dim=0)
-        
-        print('=====Results=====')
-
-        print('OME-static')
-        print(result_static_ome.mean(dim=0), '|', result_static_ome.mean())
-
-        if result_dynamic_ome is not None:
-            print('OME-dynamic')
-            result_dynamic_ome = torch.cat(result_dynamic_ome, dim=0)
-            print(result_dynamic_ome.mean(dim=0), '|', result_dynamic_ome.mean())
-        if result_static_ome_global is not None:
-            result_static_ome_global = torch.cat(result_static_ome_global, dim=0)
-            print('OME-static-global')
-            print(result_static_ome_global.mean(dim=0), '|', result_static_ome_global.mean())
-
-    def evaluate_imuposer(self, calibrate: bool = False, save_dir: str = None, save_img: bool = False):
-        result_static_ome = []
-        result_static_ome_global = []
-        result_dynamic_ome = []  # 只有 calibrate=True 时才会用到
-
-        oris = self.data["ori"]   # [N, imu_num, 3, 3]
-        accs = self.data["acc"]   # [N, imu_num, 3, 1]
+        oris = self.data["ori"]
+        accs = self.data["acc"]
         poses = self.data["pose"]
 
         for idx in tqdm(range(len(oris))):
-            ori = oris[idx]
-            acc = accs[idx]
+            if subject_ranges is not None:
+                subject_id, local_seq_id = self._get_subject_and_local_idx(
+                    idx, subject_ranges
+                )
+            else:
+                subject_id, local_seq_id = None, idx
+
+            ori = oris[idx][:, [0, 3, 4]]
+            acc = accs[idx][:, [0, 3, 4]]
             pose = poses[idx]
 
-            pose = self.body_model.forward_kinematics(pose, calc_mesh=False)[0].view(-1, 24, 3, 3)
-            gt_bone = pose[:, [18, 2, 15]]  # [T, 3, 3, 3] 之类（按你原本逻辑）
-            ori = ori[:, [0, 3, 4]]  
-            
-            global_err = angle_diff(ori, gt_bone, imu_num=3, print_result=False)
-            result_static_ome_global.append(global_err)
-            
-            # TODO: 基于ori和gt_bone可视化旋转误差欧拉角形式的三个分量并保存图片
-            if save_img:
-                R_err = ori.transpose(-2, -1).matmul(gt_bone)  
-                
-                euler_err = art.math.rotation_matrix_to_euler_angle(R_err, seq='YZX') * 180 / np.pi
-                euler_err = euler_err.view(-1, 3, 3)
-                seq_dir = os.path.join(save_dir, f'seq_{idx}')
+            pose = self.body_model.forward_kinematics(
+                pose, calc_mesh=False
+            )[0].view(-1, 24, 3, 3)
+            gt_bone = pose[:, [18, 2, 15]]
+
+            # ================= save Euler error =================
+            if save_img and save_dir is not None:
+                R_err = ori.transpose(-2, -1).matmul(gt_bone)
+                euler_err = (art.math.rotation_matrix_to_euler_angle(R_err, seq="YZX") * 180 / np.pi).view(-1, 3, 3)
+
+                if subject_ranges is not None:
+                    seq_dir = os.path.join(
+                        save_dir,
+                        f"subject_{subject_id:02d}",
+                        f"seq_{local_seq_id:03d}",
+                    )
+                else:
+                    seq_dir = os.path.join(save_dir, f"seq_{idx:04d}")
+
                 os.makedirs(seq_dir, exist_ok=True)
-                
+
                 T = euler_err.shape[0]
                 x = torch.arange(T).cpu().numpy()
-                
-                for sensor_id in range(euler_err.shape[1]):
-                    y = euler_err[:, sensor_id, :].detach().cpu().numpy()  # [T, 3]
-                    
-                    plt.figure()
-                    plt.plot(x, y[:, 0], label="yaw (Y)")
-                    plt.plot(x, y[:, 1], label="roll (Z)")
-                    plt.plot(x, y[:, 2], label="pitch (X)")
-                    
-                    plt.ylim(-45, 45)
-                    
+
+                for sensor_id in range(3):
+                    y = euler_err[:, sensor_id].cpu().numpy()
+
+                    plt.figure(figsize=(6, 3))
+                    plt.plot(x, y[:, 0], label="yaw")
+                    plt.plot(x, y[:, 1], label="roll")
+                    plt.plot(x, y[:, 2], label="pitch")
+                    plt.ylim(-60, 60)
                     plt.xlabel("frame")
                     plt.ylabel("euler error (deg)")
-                    plt.title(f"Seq {idx:04d} | Sensor {sensor_id} | Euler Error")
-                    plt.legend()
+                    plt.title(
+                        f"Sub {subject_id:02d} | Seq {local_seq_id:03d} | IMU {sensor_id}"
+                        if subject_id is not None
+                        else f"Seq {idx:04d} | IMU {sensor_id}"
+                    )
+                    plt.legend(loc="upper right")
                     plt.tight_layout()
-                    
-                    out_path = os.path.join(seq_dir, f"imu_{sensor_id:02d}.png")
-                    plt.savefig(out_path, dpi=200)
+                    plt.savefig(
+                        os.path.join(seq_dir, f"imu_{sensor_id:02d}.png"),
+                        dpi=200,
+                    )
                     plt.close()
-                    
-            # 统一准备需要评估的 imu streams：至少 static；如果 calibrate 再加一个 calib
-            imu_streams = [("static", ori)]
-            if calibrate:
-                acc_sel = acc[:, [0, 3, 4]]
-                ori_sel = ori[:, [0, 3, 4]]
-                _, ori_calib, _, _ = self.inference_ours(acc_sel, ori_sel)
-                ori_calib = ori_calib.view(-1, config.imu_num, 3, 3)
 
-                imu_streams.append(("calib", ori_calib))
-
-            # 只算一次 gt_yaw
+            # ================= quantitative =================
             gt_yaw = get_ego_yaw(gt_bone, ego_idx=self.ego_id)
             gt_bone_ego = gt_yaw.transpose(-2, -1).matmul(gt_bone)
 
-            # 对每个 stream 统一做 yaw 对齐 + 误差计算
-            for tag, imu_bone in imu_streams:
-                imu_yaw = get_ego_yaw(imu_bone, ego_idx=self.ego_id)
-                imu_bone_ego = imu_yaw.transpose(-2, -1).matmul(imu_bone)
+            for mode in calib_modes:
+                ori_calib = self.apply_calibration(acc, ori, mode)
+                imu_yaw = get_ego_yaw(ori_calib, ego_idx=self.ego_id)
+                imu_bone_ego = imu_yaw.transpose(-2, -1).matmul(ori_calib)
 
-                err = angle_diff(imu_bone_ego, gt_bone_ego, imu_num=3, print_result=False)
+                err = angle_diff(
+                    imu_bone_ego,
+                    gt_bone_ego,
+                    imu_num=3,
+                    print_result=False,
+                )
 
-                if tag == "static":
-                    result_static_ome.append(err)
-                else:  # "calib"
-                    result_dynamic_ome.append(err)
+                if subject_ranges is None:
+                    results[mode].append(err)
+                else:
+                    results[mode][subject_id].append(err)
 
-        # 输出也收敛一下
-        if calibrate:
-            self._print_results(result_static_ome, result_dynamic_ome)
-        else:
-            self._print_results(result_static_ome, result_static_ome_global=result_static_ome_global)
+        # ================= print =================
+        print("\n========== Evaluation Results ==========")
+        for mode in calib_modes:
+            print(f"\n[{mode}]")
+
+            if subject_ranges is None:
+                errs = torch.cat(results[mode], dim=0)
+                v, m = errs.mean(dim=0).tolist(), errs.mean().item()
+                print(f"  Overall: [{v[0]:.2f}, {v[1]:.2f}, {v[2]:.2f}] | {m:.2f}")
+            else:
+                all_errs = []
+                for sid in range(num_subjects):
+                    errs = torch.cat(results[mode][sid], dim=0)
+                    all_errs.append(errs)
+                    v, m = errs.mean(dim=0).tolist(), errs.mean().item()
+                    print(
+                        f"  Subject {sid:02d}: "
+                        f"[{v[0]:.2f}, {v[1]:.2f}, {v[2]:.2f}] | {m:.2f}"
+                    )
+
+                errs = torch.cat(all_errs, dim=0)
+                v, m = errs.mean(dim=0).tolist(), errs.mean().item()
+                print(f"  Overall: [{v[0]:.2f}, {v[1]:.2f}, {v[2]:.2f}] | {m:.2f}")
+
+
+# ============================================================
+# 7. Main
+# ============================================================
 
 def main():
-    # 构建模型文件路径
-    model_checkpoint_path = f'./data/checkpoint/calibrator/Ours_IMUPoserData/Ours_IMUPoserData_20.pth'
-        
-    # 创建TIC模型评估器
-    tic_evaluator = TICModelEvaluator(model_checkpoint_path)
+    evaluator = TICModelEvaluator()
+    evaluator.evaluate_imuposer(
+        calib_modes=[CalibMode.NONE, CalibMode.TIC],
+        subject_num=config.imuposer_dataset.subject_num,
+        save_dir="data/rotation/full",
+        save_img=True,
+    )
 
-    # 运行评估
-    print(f'Evaluating TIC model with checkpoint: {model_checkpoint_path}')
-    tic_evaluator.evaluate_imuposer(calibrate=False, save_dir='data/rotation/upper_body', save_img=True)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

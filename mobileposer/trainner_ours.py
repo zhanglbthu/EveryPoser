@@ -33,7 +33,7 @@ class TicTrainner(BaseTrainer):
 
 
     def run(self, epoch, data_shuffle=True, evaluator=None, noise_sigma=None):
-        from simulations_ours import imu_drift_offset_simulation, imu_offset_simulation, imu_offset_simulation_realdata
+        from simulations_ours import imu_offset_simulation, imu_offset_simulation_realdata
 
         # 获取当前模型所在device
         device = self.get_model_device()
@@ -54,8 +54,8 @@ class TicTrainner(BaseTrainer):
 
             for data in tqdm(data_loader):
                 rot, acc, rot_gt, acc_gt = data
-                rot = rot.to(device) # [128, 256, 2, 3, 3]
-                acc = acc.to(device) # [128, 256, 2, 3, 1]
+                rot = rot.to(device) # [128, 256, 3, 3, 3]
+                acc = acc.to(device) # [128, 256, 3, 3, 1]
                 rot_gt = rot_gt.to(device)
                 acc_gt = acc_gt.to(device)
 
@@ -74,7 +74,7 @@ class TicTrainner(BaseTrainer):
                 self.optimizer[0].zero_grad()
 
                 offset_hat = self.model(x)
-
+                
                 loss = self.MSE(offset_hat, offset)
 
                 loss.backward()

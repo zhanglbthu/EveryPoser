@@ -4,7 +4,7 @@ from model_tic import *
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-dataset = IMUData.load_data(folder_path='/root/autodl-tmp/data/Real_Dataset/RealData_Processed', step=1)
+dataset = IMUData.load_data(folder_path=paths.real_dataset_processed_dir, step=1)
 
 data_len = len(dataset['rot'])
 
@@ -13,7 +13,6 @@ rot = dataset['rot']
 acc = dataset['acc']
 rot_gt = dataset['rot_gt']
 acc_gt = dataset['acc_gt']
-# print(rot.shape, acc.shape, rot_gt.shape, acc_gt.shape)
 print(f"rot: {rot.shape}, acc: {acc.shape}, rot_gt: {rot_gt.shape}, acc_gt: {acc_gt.shape}")
 
 data_train = IMUData(rot=rot, acc=acc, rot_gt=rot_gt, acc_gt=acc_gt, seg_info=dataset['seg_info'], seq_len=128)
@@ -25,7 +24,7 @@ trainner = TicTrainner(model=model, data=data_train, optimizer=optimizer, batch_
 
 # trainner.restore(checkpoint_path='checkpoint/TIC_13.pth', load_optimizer=True)
 epoch=20
-model_name = f'Ours_IMUPoserData'
+model_name = f'Ours_RealData'
 ckpt_path = f'./data/checkpoint/calibrator/{model_name}'
 os.makedirs(ckpt_path, exist_ok=True)
 print(model_name)

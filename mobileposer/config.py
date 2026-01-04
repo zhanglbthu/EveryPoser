@@ -41,11 +41,12 @@ class paths:
     processed_datasets = Path("/root/autodl-tmp/processed_dataset")
     raw_totalcapture_official = root_dir / "/root/autodl-tmp/data/TotalCapture/official"
     calibrated_totalcapture = root_dir / "/root/autodl-tmp/data/TotalCapture/calibrated" 
-    real_dataset_processed_dir = '/root/autodl-tmp/data/Real_Dataset/RealData_Processed'
+    real_dataset_dir = '/root/autodl-tmp/data_real/raw/full_1229'
+    real_dataset_processed_dir = '/root/autodl-tmp/data_real/processed'
     temp_dir = Path("data/livedemo/temp")
     
     # TIC
-    amass_dir = '/root/autodl-tmp/data_TIC/AMASS_IMU6'
+    amass_dir = '/root/autodl-tmp/data_tic/AMASS_IMU6'
 
 class model_config:
     """MobilePoser Model configurations."""
@@ -111,13 +112,17 @@ class datasets:
     imuposer_test = "imuposer_test.pt"
     
     imuposer_upper_body = "imuposer_full_upper_body.pt"
+    imuposer_rest = "imuposer_full_rest.pt"
+    imuposer_full = "imuposer_full.pt"
 
     # Test datasets
     test_datasets = {
         'dip': dip_test,
         'totalcapture': totalcapture,
         'imuposer': imuposer_test,
-        'imuposer_upper_body': imuposer_upper_body
+        'imuposer_upper_body': imuposer_upper_body,
+        'imuposer_rest': imuposer_rest,
+        'imuposer_full': imuposer_full
     }
 
     # Finetune datasets
@@ -142,6 +147,8 @@ class imuposer_dataset:
     upper_body = ['startClap', 'ArmRaises', 'ArmSwing', 'TennisSwings', 'Boxing', 'Basketball', 'WavingAndClapping',
                   'startClapping', 'ArmSwings', 'ArmsCrossing', 'BasketBall', 'Waving', 'ClappingFull',
                   'startcalpping', 'Armcrossing', 'ArmRaisesRedo']
+    
+    subject_num = [16, 17, 15, 14, 18, 17, 18, 18, 16, 18]
 
 class joint_set:
     """Joint sets configurations."""

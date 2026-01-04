@@ -13,7 +13,7 @@ class TPM(BaseModel):
         return x
 
 class TIC(BaseModel):
-    def __init__(self, stack, n_input, n_output, multi_head=8, d_model=256, d_ff=512):
+    def __init__(self, n_input, n_output, stack=3, multi_head=8, d_model=256, d_ff=512):
         """
         :param stack: 堆叠多少个编码器层
         :param multi_head: 多头注意力头的数量

@@ -300,8 +300,6 @@ def process_imuposer(split: str="train", motion_type: str=None):
     test_split = ['P9', 'P10']
     full_split = train_split + test_split
     
-    rot_test_split = ['P9', 'P10']
-    
     processed_real_data_dir = paths.real_dataset_processed_dir
     
     # subjects = train_split if split == "train" else test_split
@@ -314,8 +312,8 @@ def process_imuposer(split: str="train", motion_type: str=None):
     else:
         raise ValueError(f"Unknown split: {split}.")
     
-    # change: use rot_test_split
-    subjects = rot_test_split 
+    # # change: use rot_test_split
+    subjects = full_split
     
     if motion_type is not None:
         if motion_type == "upper_body":
@@ -331,7 +329,8 @@ def process_imuposer(split: str="train", motion_type: str=None):
         print(f"Processing: {pid_path.name}")
         for fpath in sorted(pid_path.iterdir()):
             motion_name = fpath.name.split('.')[1].strip()
-            # if selected_type is not None and motion_name not in selected_type:
+            # *: need to set by hand
+            # if selected_type is not None and motion_name in selected_type:
             #     continue
             # else:
             #     # print pid_path.name and motion_name
@@ -401,13 +400,15 @@ def process_imuposer(split: str="train", motion_type: str=None):
     # print total duration in seconds
     total_duration = total_frames / TARGET_FPS
     print(f"# Total Duration: {total_duration:.2f} seconds")
+    
     data = {
         'acc': accs,
         'ori': oris,
         'pose': poses,
         'tran': trans,
     }
-    data_path = paths.eval_dir / f"imuposer_rot.pt"
+    
+    data_path = paths.eval_dir / f"imuposer_full.pt"
     torch.save(data, data_path)
 
 def create_directories():
@@ -430,7 +431,7 @@ if __name__ == "__main__":
     elif args.dataset == "imuposer":
         # process_imuposer(split="train")
         # process_imuposer(split="test")
-        process_imuposer(split="full")
+        process_imuposer(split="full", motion_type=None)
     elif args.dataset == "dip":
         process_dipimu(split="train")
         process_dipimu(split="test")
